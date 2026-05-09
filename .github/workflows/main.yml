@@ -3,79 +3,78 @@ name: PlatformIO Build & Release
 on:
   push:
     tags:
-      - "v*.*.*"   # Trigger bei Tags wie v1.0.0, v1.2.3 usw.
-  workflow_dispatch: # Ermöglicht den manuellen Start über das GitHub Actions Tab
+      - "v*.*.*"
+  workflow_dispatch:
 
 jobs:
   build:
     name: Build Firmware
     runs-on: ubuntu-latest
-
-    # Berechtigungen setzen, damit das GITHUB_TOKEN ein Release erstellen darf
     permissions:
       contents: write
 
     steps:
-      # ── 1. Repo auschecken ──────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Python einrichten ──────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ── 3. PlatformIO cachen & installieren ─────────────────────────────
       - name: Cache PlatformIO
         uses: actions/cache@v4
         with:
           path: ~/.platformio
           key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
-          restore-keys: |
-            ${{ runner.os }}-platformio-
 
       - name: Install PlatformIO Core
         run: pip install --upgrade platformio
 
-      # ── 4. Kompilieren ──────────────────────────────────────────────────
       - name: Build firmware
         run: pio run --environment esp32dev
 
-      # ── 5. .bin umbenennen & Tag bestimmen ──────────────────────────────
-      - name: Rename firmware binary
+      - name: Prepare Binary and Environment
+        id: prepare
         run: |
-          # Falls manuell gestartet, nutzen wir 'manual' oder den Branch-Namen als Fallback
-          RAW_TAG="${{ github.ref_name }}"
-          VERSION=${RAW_TAG//\//-} # Ersetzt Slashes durch Bindestriche für Dateinamen
+          # Version bestimmen (Tag oder Branch)
+          VERSION="${{ github.ref_name }}"
+          # Sonderzeichen in Dateinamen bereinigen
+          VERSION_CLEAN=$(echo $VERSION | sed 's/[^a-zA-Z0-9._-]/_/g')
           
-          BIN_SRC=".pio/build/esp32dev/firmware.bin"
-          BIN_DST="wps-display-${VERSION}.bin"
+          SRC=".pio/build/esp32dev/firmware.bin"
+          DST="wps-display-${VERSION_CLEAN}.bin"
 
-          if [ ! -f "$BIN_SRC" ]; then
-            echo "ERROR: firmware.bin nicht gefunden"
+          if [ -f "$SRC" ]; then
+            cp "$SRC" "$DST"
+            echo "Gefundene Datei: $DST"
+            # WICHTIG: Als Output für andere Steps setzen
+            echo "bin_path=$DST" >> $GITHUB_OUTPUT
+            echo "bin_name=$DST" >> $GITHUB_ENV
+          else
+            echo "::error::Firmware Datei wurde nicht gefunden!"
+            ls -R .pio/build/
             exit 1
           fi
 
-          cp "$BIN_SRC" "$BIN_DST"
-          echo "BIN_NAME=$BIN_DST" >> $GITHUB_ENV
-          echo "RELEASE_TAG=$RAW_TAG" >> $GITHUB_ENV
-          echo "Firmware bereit: $BIN_DST"
-
-      # ── 6. GitHub Release erstellen ─────────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: "Release ${{ env.RELEASE_TAG }}"
+          # Wir nutzen hier den Output vom vorherigen Step
+          files: ${{ steps.prepare.outputs.bin_path }}
+          tag_name: ${{ github.ref_name }}
+          name: "Release ${{ github.ref_name }}"
           body: |
-            ## ESP32 WPS Display Firmware – ${{ env.RELEASE_TAG }}
-
-            ### Änderungen
-            Automatisch gebaut aus ${{ github.event_name == 'workflow_dispatch' && 'manuellem Trigger' || 'Commit' }} `${{ github.sha }}`.
-
-            ### Flashen
+            ## ESP32 Firmware Build
+            - Version: ${{ github.ref_name }}
+            - Commit: `${{ github.sha }}`
+            
+            ### Flash-Kommando:
             ```bash
-            esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 460800 \
-              write_flash -z 0x10000 ${{ env.BIN_NAME }}
+            esptool.py --chip esp32 write_flash -z 0x10000 ${{ steps.prepare.outputs.bin_path }}
+            ```
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
