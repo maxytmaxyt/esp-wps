@@ -1,0 +1,81 @@
+name: PlatformIO Build & Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"   # Trigger bei Tags wie v1.0.0, v1.2.3 usw.
+  workflow_dispatch: # Ermöglicht den manuellen Start über das GitHub Actions Tab
+
+jobs:
+  build:
+    name: Build Firmware
+    runs-on: ubuntu-latest
+
+    # Berechtigungen setzen, damit das GITHUB_TOKEN ein Release erstellen darf
+    permissions:
+      contents: write
+
+    steps:
+      # ── 1. Repo auschecken ──────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python einrichten ──────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. PlatformIO cachen & installieren ─────────────────────────────
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-
+
+      - name: Install PlatformIO Core
+        run: pip install --upgrade platformio
+
+      # ── 4. Kompilieren ──────────────────────────────────────────────────
+      - name: Build firmware
+        run: pio run --environment esp32dev
+
+      # ── 5. .bin umbenennen & Tag bestimmen ──────────────────────────────
+      - name: Rename firmware binary
+        run: |
+          # Falls manuell gestartet, nutzen wir 'manual' oder den Branch-Namen als Fallback
+          RAW_TAG="${{ github.ref_name }}"
+          VERSION=${RAW_TAG//\//-} # Ersetzt Slashes durch Bindestriche für Dateinamen
+          
+          BIN_SRC=".pio/build/esp32dev/firmware.bin"
+          BIN_DST="wps-display-${VERSION}.bin"
+
+          if [ ! -f "$BIN_SRC" ]; then
+            echo "ERROR: firmware.bin nicht gefunden"
+            exit 1
+          fi
+
+          cp "$BIN_SRC" "$BIN_DST"
+          echo "BIN_NAME=$BIN_DST" >> $GITHUB_ENV
+          echo "RELEASE_TAG=$RAW_TAG" >> $GITHUB_ENV
+          echo "Firmware bereit: $BIN_DST"
+
+      # ── 6. GitHub Release erstellen ─────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "Release ${{ env.RELEASE_TAG }}"
+          body: |
+            ## ESP32 WPS Display Firmware – ${{ env.RELEASE_TAG }}
+
+            ### Änderungen
+            Automatisch gebaut aus ${{ github.event_name == 'workflow_dispatch' && 'manuellem Trigger' || 'Commit' }} `${{ github.sha }}`.
+
+            ### Flashen
+            ```bash
+            esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 460800 \
+              write_flash -z 0x10000 ${{ env.BIN_NAME }}
