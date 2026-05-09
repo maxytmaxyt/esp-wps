@@ -40,8 +40,8 @@ void WiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             Serial.print("[WiFi] IP: ");
             Serial.println(WiFi.localIP());
-            wps_ssid = WiFi.SSID();
-            wps_pass = WiFi.psk();
+            wps_ssid    = WiFi.SSID();
+            wps_pass    = WiFi.psk();
             wps_success = true;
             break;
 
@@ -62,11 +62,12 @@ void WiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
             if (wps_success) {
+                wps_success = false;  // Reset damit Display-State wieder korrekt ist
                 Serial.println("[WiFi] Connection lost - Reconnecting...");
                 WiFi.begin();
             }
             break;
-            
+
         default:
             break;
     }
@@ -76,25 +77,23 @@ void setup() {
     Serial.begin(115200);
 
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+        Serial.println("[OLED] Init failed!");
         for (;;) { delay(100); }
     }
     updateDisplay("WPS MODE", "Press button", "on router...");
 
-    // Initialize WPS configuration
+    // WPS Config – crypto_funcs existiert in IDF 5.x nicht mehr, NICHT setzen
     memset(&wps_config, 0, sizeof(wps_config));
     wps_config.wps_type = WPS_TYPE_PBC;
-    
-    // Assign mandatory crypto functions for the WPS handshake
-    wps_config.crypto_funcs = &g_wifi_default_wps_crypto_funcs;
 
-    strlcpy(wps_config.factory_info.manufacturer, "ESPRESSIF", sizeof(wps_config.factory_info.manufacturer));
-    strlcpy(wps_config.factory_info.model_number,  "ESP32",     sizeof(wps_config.factory_info.model_number));
+    strlcpy(wps_config.factory_info.manufacturer, "ESPRESSIF",      sizeof(wps_config.factory_info.manufacturer));
+    strlcpy(wps_config.factory_info.model_number,  "ESP32",         sizeof(wps_config.factory_info.model_number));
     strlcpy(wps_config.factory_info.model_name,    "ESPRESSIF IOT", sizeof(wps_config.factory_info.model_name));
     strlcpy(wps_config.factory_info.device_name,   "ESP STATION",   sizeof(wps_config.factory_info.device_name));
 
     WiFi.onEvent(WiFiEvent);
     WiFi.mode(WIFI_MODE_STA);
-    
+
     esp_wifi_wps_enable(&wps_config);
     esp_wifi_wps_start(0);
 
@@ -108,5 +107,11 @@ void loop() {
         displayUpdated = true;
         updateDisplay("CONNECTED!", "SSID: " + wps_ssid, "IP: " + WiFi.localIP().toString());
     }
+
+    if (!wps_success && displayUpdated) {
+        displayUpdated = false;
+        updateDisplay("LOST CONNECTION", "Reconnecting...", "");
+    }
+
     delay(500);
 }
